@@ -232,11 +232,18 @@
         <!-- Content will be injected here -->
     </div>
 
+    <!-- Google API Library -->
+    <script src="https://apis.google.com/js/api.js"></script>
     <script>
         // Configuration - REPLACE THESE WITH YOUR OWN VALUES
         const SHEET_ID = '1b8VXiTPe4jMVBXLKdhSYLjas36QT0tfu3OBlMrdF_Q0';
-        const API_KEY = 'AIzaSyBtIH1g9yZdjJ3lOtl7o7PmA9ukc76aTtE';
+        const API_KEY = 'AIzaSyBtIH1g9yZdjJ3lOtl7o7PmA9ukc76aTtE'; // Still used for read operations
+        const OAUTH_CLIENT_ID = '582779635693-072h14eqgs6gch0ncvmocj9v7gn0k52f.apps.googleusercontent.com'; // Replace with your OAuth Client ID
         const BRIDGE_URL = 'http://localhost:5000'; // Python bridge server
+
+        // OAuth variables
+        let isSignedIn = false;
+        let authInstance = null;
         
         // Demo data (fallback)
         const DEMO_MENU = [
@@ -270,7 +277,63 @@
         
         // Initialize
         function init() {
-            loadData();
+            initGoogleAuth();
+        }
+
+        // Initialize Google OAuth
+        function initGoogleAuth() {
+            gapi.load('auth2', () => {
+                gapi.auth2.init({
+                    client_id: OAUTH_CLIENT_ID
+                }).then(() => {
+                    authInstance = gapi.auth2.getAuthInstance();
+                    isSignedIn = authInstance.isSignedIn.get();
+
+                    if (isSignedIn) {
+                        console.log('✓ Already signed in to Google');
+                        loadData();
+                    } else {
+                        console.log('⚠️ Not signed in to Google - write operations will use localStorage only');
+                        loadData();
+                    }
+
+                    // Listen for sign-in state changes
+                    authInstance.isSignedIn.listen(updateSigninStatus);
+
+                }).catch(error => {
+                    console.error('Error initializing Google Auth:', error);
+                    loadData(); // Continue with localStorage only
+                });
+            });
+        }
+
+        // Handle sign-in state changes
+        function updateSigninStatus(isSignedIn) {
+            if (isSignedIn) {
+                console.log('✓ Signed in to Google');
+                // Reload saved recipes to sync with Google Sheets
+                loadSavedRecipes();
+            } else {
+                console.log('⚠️ Signed out of Google');
+            }
+            render(); // Update UI
+        }
+
+        // Sign in to Google
+        function signInToGoogle() {
+            if (authInstance) {
+                authInstance.signIn().catch(error => {
+                    console.error('Sign-in error:', error);
+                    alert('Failed to sign in to Google. Check console for details.');
+                });
+            }
+        }
+
+        // Sign out of Google
+        function signOutOfGoogle() {
+            if (authInstance) {
+                authInstance.signOut();
+            }
         }
         
         // Load data from Google Sheets
@@ -371,26 +434,33 @@
                 console.error('Error saving to localStorage:', error);
             }
 
-            // Attempt to save to Google Sheets (will likely fail with API key auth)
-            try {
-                const range = 'Saved Recipes!A:C';
-                const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}:append?valueInputOption=RAW&key=${API_KEY}`;
+            // Save to Google Sheets if authenticated
+            if (isSignedIn && authInstance) {
+                try {
+                    await gapi.load('client', async () => {
+                        await gapi.client.init({
+                            apiKey: API_KEY,
+                            discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4']
+                        });
 
-                const response = await fetch(sheetUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        values: [[name, url, type]]
-                    })
-                });
+                        const request = {
+                            spreadsheetId: SHEET_ID,
+                            range: 'Saved Recipes!A:C',
+                            valueInputOption: 'RAW',
+                            resource: {
+                                values: [[name, url, type]]
+                            }
+                        };
 
-                if (response.ok) {
-                    console.log('✓ Recipe also saved to Google Sheets:', name);
-                } else {
-                    console.log('⚠️ Could not save to Google Sheets (read-only API key), but saved locally');
+                        const response = await gapi.client.sheets.spreadsheets.values.append(request);
+                        console.log('✓ Recipe saved to Google Sheets:', name);
+                    });
+                } catch (error) {
+                    console.error('Error saving to Google Sheets:', error);
+                    console.log('⚠️ Could not save to Google Sheets, but saved locally');
                 }
-            } catch (error) {
-                console.log('⚠️ Could not save to Google Sheets (read-only API key), but saved locally');
+            } else {
+                console.log('⚠️ Not signed in to Google - recipe saved locally only');
             }
         }
 
@@ -558,12 +628,23 @@
         function render() {
             const app = document.getElementById('app');
             
+            const authStatus = isSignedIn ?
+                `<span style="color: #16a34a;">✓ Google Sheets Connected</span>` :
+                `<span style="color: #ea580c;">⚠️ Local Storage Only</span>`;
+
             let content = `
                 <div class="card">
                     <div class="header">
                         <div>
                             <h1>🍳 Recipe Automation</h1>
                             <div class="current-day">${currentDay}</div>
+                            <div style="font-size: 12px; margin-top: 4px;">${authStatus}</div>
+                        </div>
+                        <div>
+                            ${!isSignedIn ?
+                                `<button class="btn btn-primary" onclick="signInToGoogle()" style="padding: 8px 16px; font-size: 14px;">Sign in to Google</button>` :
+                                `<button class="btn btn-primary" onclick="signOutOfGoogle()" style="padding: 8px 16px; font-size: 14px; background: #dc2626;">Sign Out</button>`
+                            }
                         </div>
                     </div>
                 </div>
