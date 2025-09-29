@@ -234,7 +234,7 @@
 
     <!-- Google API Libraries -->
     <script src="https://apis.google.com/js/api.js"></script>
-    <script src="https://accounts.google.com/gsi/client"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script>
         // Configuration - REPLACE THESE WITH YOUR OWN VALUES
         const SHEET_ID = '1b8VXiTPe4jMVBXLKdhSYLjas36QT0tfu3OBlMrdF_Q0';
@@ -244,7 +244,8 @@
 
         // OAuth variables
         let isSignedIn = false;
-        let authInstance = null;
+        let accessToken = null;
+        let tokenClient = null;
         
         // Demo data (fallback)
         const DEMO_MENU = [
@@ -281,32 +282,46 @@
             initGoogleAuth();
         }
 
-        // Initialize Google OAuth
+        // Initialize Google Auth using new Google Identity Services
         function initGoogleAuth() {
             console.log('Initializing Google Auth...');
 
-            // Initialize both APIs
-            gapi.load('auth2:client', async () => {
+            // Wait for Google APIs to load
+            const initializeApis = () => {
                 try {
-                    // Initialize the auth2 library
-                    await gapi.auth2.init({
-                        client_id: OAUTH_CLIENT_ID,
-                        scope: 'https://www.googleapis.com/auth/spreadsheets'
+                    // Initialize the Google API client
+                    gapi.load('client', async () => {
+                        try {
+                            await gapi.client.init({
+                                apiKey: API_KEY,
+                                discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4']
+                            });
+                            console.log('Google API client initialized');
+                        } catch (error) {
+                            console.error('Error initializing Google client:', error);
+                        }
                     });
 
-                    // Initialize the client library
-                    await gapi.client.init({
-                        apiKey: API_KEY,
-                        discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4']
-                    });
-
-                    authInstance = gapi.auth2.getAuthInstance();
-                    isSignedIn = authInstance.isSignedIn.get();
-
-                    console.log('Google Auth initialized. Signed in:', isSignedIn);
-
-                    // Listen for sign-in state changes
-                    authInstance.isSignedIn.listen(updateSigninStatus);
+                    // Initialize the OAuth2 token client (newer API)
+                    if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+                        tokenClient = google.accounts.oauth2.initTokenClient({
+                            client_id: OAUTH_CLIENT_ID,
+                            scope: 'https://www.googleapis.com/auth/spreadsheets',
+                            callback: (tokenResponse) => {
+                                console.log('✓ Token received:', tokenResponse);
+                                if (tokenResponse.access_token) {
+                                    accessToken = tokenResponse.access_token;
+                                    isSignedIn = true;
+                                    updateSigninStatus(true);
+                                }
+                            }
+                        });
+                        console.log('Token client initialized');
+                    } else {
+                        console.log('Google Identity Services not yet loaded, will retry...');
+                        setTimeout(initializeApis, 500);
+                        return;
+                    }
 
                     loadData();
 
@@ -314,7 +329,10 @@
                     console.error('Error initializing Google Auth:', error);
                     loadData(); // Continue with localStorage only
                 }
-            });
+            };
+
+            // Start initialization
+            initializeApis();
         }
 
         // Handle sign-in state changes
@@ -326,6 +344,7 @@
                 loadSavedRecipes();
             } else {
                 console.log('⚠️ Signed out of Google');
+                accessToken = null;
             }
             render(); // Update UI
         }
@@ -333,27 +352,30 @@
         // Sign in to Google
         function signInToGoogle() {
             console.log('Attempting to sign in...');
-            if (authInstance) {
-                authInstance.signIn({
-                    scope: 'https://www.googleapis.com/auth/spreadsheets'
-                }).then(() => {
-                    console.log('✓ Sign-in successful');
-                }).catch(error => {
+            if (tokenClient) {
+                try {
+                    tokenClient.requestAccessToken({ prompt: 'consent' });
+                } catch (error) {
                     console.error('Sign-in error:', error);
-                    alert('Failed to sign in to Google. Check console for details.');
-                });
+                    alert('Failed to sign in to Google. Please check that popups are allowed.');
+                }
             } else {
-                console.error('Auth instance not initialized');
-                alert('Google Auth not ready. Please refresh the page.');
+                console.error('Token client not initialized');
+                alert('Google Auth not ready. Please refresh the page and wait a moment.');
             }
         }
 
         // Sign out of Google
         function signOutOfGoogle() {
             console.log('Signing out...');
-            if (authInstance) {
-                authInstance.signOut();
+            if (accessToken) {
+                google.accounts.oauth2.revoke(accessToken, () => {
+                    console.log('Access token revoked');
+                });
             }
+            accessToken = null;
+            isSignedIn = false;
+            updateSigninStatus(false);
         }
         
         // Load data from Google Sheets
@@ -455,8 +477,13 @@
             }
 
             // Save to Google Sheets if authenticated
-            if (isSignedIn && authInstance) {
+            if (isSignedIn && accessToken) {
                 try {
+                    // Set the access token for the API client
+                    gapi.client.setToken({
+                        access_token: accessToken
+                    });
+
                     const request = {
                         spreadsheetId: SHEET_ID,
                         range: 'Saved Recipes!A:C',
@@ -471,6 +498,12 @@
                 } catch (error) {
                     console.error('Error saving to Google Sheets:', error);
                     console.log('⚠️ Could not save to Google Sheets, but saved locally');
+
+                    // If token expired, sign out
+                    if (error.status === 401) {
+                        console.log('Access token expired, signing out');
+                        signOutOfGoogle();
+                    }
                 }
             } else {
                 console.log('⚠️ Not signed in to Google - recipe saved locally only');
