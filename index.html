@@ -361,7 +361,7 @@
                 return await extractIngredientsFromPage(guruUrl);
             }
             
-            // For written recipes, fetch directly
+            // For written recipes, use bridge
             return await extractIngredientsFromPage(url);
         }
         
@@ -380,11 +380,6 @@
                 console.error('Error extracting ingredients:', error);
                 return [];
             }
-        }
-        
-        async function parseRecipeWithOllama(url) {
-            // No longer needed - handled by bridge
-            return await extractIngredientsFromPage(url);
         }
         
         async function fetchFullRecipeWithOllama(url) {
