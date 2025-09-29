@@ -225,66 +225,6 @@
             margin: 16px 0;
             color: #1e40af;
         }
-        
-        .setup-box {
-            background: #f0f9ff;
-            border: 1px solid #bae6fd;
-            border-radius: 8px;
-            padding: 20px;
-            margin: 20px 0;
-        }
-        
-        .setup-box h3 {
-            color: #075985;
-            margin-bottom: 12px;
-        }
-        
-        .setup-box ol {
-            margin-left: 20px;
-            color: #0c4a6e;
-        }
-        
-        .setup-box li {
-            margin: 8px 0;
-        }
-        
-        input[type="text"] {
-            width: 100%;
-            padding: 12px;
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            font-size: 14px;
-            margin: 8px 0;
-        }
-        
-        input[type="text"]:focus {
-            outline: none;
-            border-color: #ea580c;
-            box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.1);
-        }
-        
-        label {
-            display: block;
-            font-weight: 500;
-            color: #374151;
-            margin-bottom: 4px;
-        }
-        
-        .link-btn {
-            color: #ea580c;
-            text-decoration: none;
-            font-weight: 500;
-            cursor: pointer;
-            background: none;
-            border: none;
-            font-size: 14px;
-            margin-top: 12px;
-            display: inline-block;
-        }
-        
-        .link-btn:hover {
-            color: #c2410c;
-        }
     </style>
 </head>
 <body>
@@ -293,11 +233,11 @@
     </div>
 
     <script>
-        // Configuration
-        const SHEET_ID = '1b8VXiTPe4jMVBXLKdhSYLjas36QT0tfu3OBlMrdF_Q0'; // User will replace this
-        const API_KEY = '582779635693-072h14eqgs6gch0ncvmocj9v7gn0k52f.apps.googleusercontent.com'; // User will replace this
+        // Configuration - REPLACE THESE WITH YOUR OWN VALUES
+        const SHEET_ID = '1b8VXiTPe4jMVBXLKdhSYLjas36QT0tfu3OBlMrdF_Q0';
+        const API_KEY = 'AIzaSyBtIH1g9yZdjJ3lOtl7o7PmA9ukc76aTtE';
         
-        // Demo data
+        // Demo data (fallback)
         const DEMO_MENU = [
             { day: 'Monday', meal: 'Spaghetti Carbonara', url: 'https://www.example.com/carbonara', type: 'written' },
             { day: 'Tuesday', meal: 'Chicken Stir Fry', url: 'https://youtube.com/watch?v=abc123', type: 'video' },
@@ -315,47 +255,106 @@
             'Parmesan cheese - 1 cup',
             'Chicken breast - 2 lbs',
             'Mixed vegetables - 1 bag',
-            'Soy sauce - 1/4 cup',
-            'Ground beef - 1 lb',
-            'Taco shells - 12',
-            'Lettuce - 1 head',
-            'Salmon fillets - 2',
-            'Rice - 2 cups',
-            'Pizza dough - 1 lb',
-            'Tomato sauce - 1 jar'
+            'Soy sauce - 1/4 cup'
         ];
         
         // State
         let currentView = 'today';
         let weeklyMenu = [];
         let shoppingList = [];
-        let isConfigured = false;
+        let isConfigured = true; // Set to true to always try loading from sheet
         
         // Get current day
         const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-        const currentDay = days[new Date().getDay()];
+        let currentDay = days[new Date().getDay()];
+        
+        // Check URL parameters for day override (useful for NFC)
+        const urlParams = new URLSearchParams(window.location.search);
+        const dayParam = urlParams.get('day');
+        if (dayParam) {
+            currentDay = dayParam;
+        }
         
         // Initialize
         function init() {
-            const stored = localStorage.getItem('recipeSheetId');
-            if (stored) {
-                isConfigured = true;
-                loadData();
-            } else {
-                // Use demo data
-                weeklyMenu = DEMO_MENU;
-                shoppingList = DEMO_SHOPPING;
-                isConfigured = true;
-            }
-            render();
+            loadData();
         }
         
-        // Load data from Google Sheets (placeholder)
+        // Load data from Google Sheets
         function loadData() {
-            // In production, this would fetch from Google Sheets API
-            // For demo, using local data
-            weeklyMenu = DEMO_MENU;
-            shoppingList = DEMO_SHOPPING;
+            loadFromGoogleSheets();
+        }
+        
+        async function loadFromGoogleSheets() {
+            const range = 'Weekly Menu!A2:D8'; // Adjust range as needed (7 days)
+            const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error.message);
+                }
+                
+                if (data.values) {
+                    weeklyMenu = data.values.map(row => ({
+                        day: row[0] || '',
+                        meal: row[1] || '',
+                        url: row[2] || '',
+                        type: row[3] || 'written'
+                    })).filter(item => item.day && item.meal); // Filter out empty rows
+                    
+                    console.log('Loaded menu:', weeklyMenu);
+                    
+                    // Also load shopping list from Ingredients column
+                    await loadShoppingListFromSheet();
+                } else {
+                    throw new Error('No data found in sheet');
+                }
+                
+                render();
+            } catch (error) {
+                console.error('Error loading from Google Sheets:', error);
+                alert('Could not load recipes from Google Sheets. Using demo data.\n\nError: ' + error.message);
+                // Fallback to demo data
+                weeklyMenu = DEMO_MENU;
+                shoppingList = DEMO_SHOPPING;
+                render();
+            }
+        }
+        
+        async function loadShoppingListFromSheet() {
+            const range = 'Weekly Menu!E2:E8'; // Column E for ingredients
+            const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.values && data.values.length > 0) {
+                    // Flatten and combine all ingredients
+                    const allIngredients = new Set();
+                    data.values.forEach(row => {
+                        if (row[0]) {
+                            // Split by comma and trim each ingredient
+                            row[0].split(',').forEach(ing => {
+                                const trimmed = ing.trim();
+                                if (trimmed) allIngredients.add(trimmed);
+                            });
+                        }
+                    });
+                    shoppingList = Array.from(allIngredients).sort();
+                    console.log('Loaded shopping list:', shoppingList);
+                } else {
+                    // No ingredients column, use demo data
+                    shoppingList = DEMO_SHOPPING;
+                }
+            } catch (error) {
+                console.error('Error loading shopping list:', error);
+                // Keep demo shopping list
+                shoppingList = DEMO_SHOPPING;
+            }
         }
         
         // Convert video URLs to cooking.guru
@@ -372,36 +371,10 @@
         }
         
         // Render functions
-        function renderSetup() {
-            return `
-                <div class="card">
-                    <h1>🍳 Recipe Automation Setup</h1>
-                    <div class="setup-box">
-                        <h3>Setup Instructions:</h3>
-                        <ol>
-                            <li>Create a new Google Sheet</li>
-                            <li>Create two tabs: "Weekly Menu" and "Recipe Dictionary"</li>
-                            <li>In "Weekly Menu", add columns: Day | Meal Name | Recipe URL | Recipe Type</li>
-                            <li>Recipe Type should be either "written" or "video"</li>
-                            <li>Enable Google Sheets API and get an API key</li>
-                            <li>Replace SHEET_ID and API_KEY in the code</li>
-                        </ol>
-                    </div>
-                    <div class="info-box">
-                        <strong>Note:</strong> This is currently running with demo data. 
-                        To connect your own Google Sheet, you'll need to:
-                        <br>1. Set up Google Sheets API access
-                        <br>2. Update the SHEET_ID and API_KEY in the code
-                    </div>
-                    <button class="link-btn" onclick="skipSetup()">Continue with demo data →</button>
-                </div>
-            `;
-        }
-        
         function renderTodayView() {
             const recipe = getTodaysRecipe();
             if (!recipe) {
-                return '<div class="card"><p>No recipe scheduled for today.</p></div>';
+                return `<div class="info-box">No recipe scheduled for ${currentDay}. Check your Google Sheet or view This Week tab.</div>`;
             }
             
             const recipeUrl = convertToRecipeUrl(recipe.url, recipe.type);
@@ -433,6 +406,10 @@
         }
         
         function renderWeekView() {
+            if (weeklyMenu.length === 0) {
+                return '<div class="info-box">No recipes loaded. Check your Google Sheet configuration.</div>';
+            }
+            
             const items = weeklyMenu.map(item => {
                 const isToday = item.day === currentDay;
                 const recipeUrl = convertToRecipeUrl(item.url, item.type);
@@ -450,7 +427,7 @@
                                     ${item.type === 'video' ? '📹 Video Recipe' : '📄 Written Recipe'}
                                 </div>
                             </div>
-                            <a href="${recipeUrl}" target="_blank" rel="noopener noreferrer" style="color: #ea580c; text-decoration: none;">
+                            <a href="${recipeUrl}" target="_blank" rel="noopener noreferrer" style="color: #ea580c; text-decoration: none; font-size: 24px;">
                                 🔗
                             </a>
                         </div>
@@ -470,6 +447,10 @@
         }
         
         function renderShoppingView() {
+            if (shoppingList.length === 0) {
+                return '<div class="info-box">No ingredients found. Add an "Ingredients" column (E) to your Google Sheet with comma-separated ingredients.</div>';
+            }
+            
             const items = shoppingList.map((item, index) => `
                 <div class="shopping-item">
                     <input type="checkbox" id="item-${index}">
@@ -569,18 +550,6 @@
             }).catch(err => {
                 alert('Failed to copy: ' + err);
             });
-        }
-        
-        function skipSetup() {
-            isConfigured = true;
-            render();
-        }
-        
-        // Check URL parameters for day override (useful for NFC)
-        const urlParams = new URLSearchParams(window.location.search);
-        const dayParam = urlParams.get('day');
-        if (dayParam) {
-            currentDay = dayParam;
         }
         
         // Initialize app
