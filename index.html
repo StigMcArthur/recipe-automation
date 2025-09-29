@@ -318,7 +318,18 @@
         }
         
         async function loadSavedRecipes() {
-            // Load from 'Saved Recipes' sheet if exists
+            // First try to load from localStorage
+            const localRecipes = localStorage.getItem('savedRecipes');
+            if (localRecipes) {
+                try {
+                    savedRecipes = JSON.parse(localRecipes);
+                    console.log('Loaded saved recipes from localStorage:', Object.keys(savedRecipes).length);
+                } catch (error) {
+                    console.error('Error parsing localStorage recipes:', error);
+                }
+            }
+
+            // Then try to load from Google Sheets (if available)
             const range = 'Saved Recipes!A2:C100';
             const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
 
@@ -327,6 +338,7 @@
                 const data = await response.json();
 
                 if (data.values) {
+                    // Merge with existing recipes
                     data.values.forEach(row => {
                         if (row[0] && row[1]) { // name and url
                             savedRecipes[row[0]] = {
@@ -335,10 +347,14 @@
                             };
                         }
                     });
-                    console.log('Loaded saved recipes:', Object.keys(savedRecipes).length);
+                    console.log('Loaded saved recipes from Google Sheets:', Object.keys(savedRecipes).length);
+
+                    // Save merged recipes to localStorage
+                    localStorage.setItem('savedRecipes', JSON.stringify(savedRecipes));
                 }
             } catch (error) {
-                console.log('No saved recipes sheet found or error loading:', error.message);
+                console.log('Could not load from Saved Recipes sheet:', error.message);
+                console.log('Using localStorage recipes only');
             }
         }
         
@@ -347,12 +363,20 @@
             // Add recipe to saved recipes dictionary
             savedRecipes[name] = { url, type };
 
-            // Save to Google Sheets if possible
+            // Always save to localStorage first (this will work reliably)
+            try {
+                localStorage.setItem('savedRecipes', JSON.stringify(savedRecipes));
+                console.log('✓ Recipe saved locally:', name);
+            } catch (error) {
+                console.error('Error saving to localStorage:', error);
+            }
+
+            // Attempt to save to Google Sheets (will likely fail with API key auth)
             try {
                 const range = 'Saved Recipes!A:C';
                 const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}:append?valueInputOption=RAW&key=${API_KEY}`;
 
-                await fetch(sheetUrl, {
+                const response = await fetch(sheetUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -360,9 +384,13 @@
                     })
                 });
 
-                console.log('Saved recipe to sheet:', name);
+                if (response.ok) {
+                    console.log('✓ Recipe also saved to Google Sheets:', name);
+                } else {
+                    console.log('⚠️ Could not save to Google Sheets (read-only API key), but saved locally');
+                }
             } catch (error) {
-                console.log('Could not save to sheet, saved locally:', error.message);
+                console.log('⚠️ Could not save to Google Sheets (read-only API key), but saved locally');
             }
         }
 
