@@ -236,12 +236,35 @@
         // Configuration - REPLACE THESE WITH YOUR OWN VALUES
         const SHEET_ID = '1b8VXiTPe4jMVBXLKdhSYLjas36QT0tfu3OBlMrdF_Q0';
         const API_KEY = 'AIzaSyBtIH1g9yZdjJ3lOtl7o7PmA9ukc76aTtE';
+        const OLLAMA_URL = 'http://localhost:11434'; // Default Ollama URL
+        const OLLAMA_MODEL = 'llama3.2'; // Change to your installed model
         
-      
+        // Demo data (fallback)
+        const DEMO_MENU = [
+            { day: 'Monday', meal: 'Spaghetti Carbonara', url: 'https://www.example.com/carbonara', type: 'written' },
+            { day: 'Tuesday', meal: 'Chicken Stir Fry', url: 'https://youtube.com/watch?v=abc123', type: 'video' },
+            { day: 'Wednesday', meal: 'Beef Tacos', url: 'https://www.example.com/tacos', type: 'written' },
+            { day: 'Thursday', meal: 'Salmon with Rice', url: 'https://www.example.com/salmon', type: 'written' },
+            { day: 'Friday', meal: 'Pizza Night', url: 'https://www.example.com/pizza', type: 'written' },
+            { day: 'Saturday', meal: 'BBQ Ribs', url: 'https://youtube.com/watch?v=xyz789', type: 'video' },
+            { day: 'Sunday', meal: 'Roast Chicken', url: 'https://www.example.com/roast', type: 'written' }
+        ];
+        
+        const DEMO_SHOPPING = [
+            'Spaghetti - 1 lb',
+            'Eggs - 6',
+            'Bacon - 8 oz',
+            'Parmesan cheese - 1 cup',
+            'Chicken breast - 2 lbs',
+            'Mixed vegetables - 1 bag',
+            'Soy sauce - 1/4 cup'
+        ];
+        
         // State
         let currentView = 'today';
         let weeklyMenu = [];
         let shoppingList = [];
+        let recipeCache = {}; // Cache for full recipes
         let isConfigured = true; // Set to true to always try loading from sheet
         
         // Get current day
@@ -306,6 +329,9 @@
             } catch (error) {
                 console.error('Error loading from Google Sheets:', error);
                 alert('Could not load recipes from Google Sheets. Using demo data.\n\nError: ' + error.message);
+                // Fallback to demo data
+                weeklyMenu = DEMO_MENU;
+                shoppingList = DEMO_SHOPPING;
                 render();
             }
         }
@@ -342,58 +368,84 @@
         
         async function extractIngredientsFromPage(url) {
             try {
-                // Note: Direct fetching may fail due to CORS. This is a limitation.
-                // A proper solution would need a backend proxy or browser extension
-                const response = await fetch(url, { mode: 'cors' });
-                const html = await response.text();
-                
-                // Parse HTML
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, 'text/html');
-                
-                // Try common recipe site patterns
-                const ingredients = [];
-                
-                // Pattern 1: Look for elements with "ingredient" in class/id
-                const ingredientElements = doc.querySelectorAll('[class*="ingredient" i], [id*="ingredient" i], .recipe-ingredient, .ingredient-list li');
-                ingredientElements.forEach(el => {
-                    const text = el.textContent.trim();
-                    if (text && text.length < 100) { // Reasonable ingredient length
-                        ingredients.push(text);
-                    }
-                });
-                
-                // Pattern 2: Look for structured data (JSON-LD)
-                if (ingredients.length === 0) {
-                    const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
-                    scripts.forEach(script => {
-                        try {
-                            const data = JSON.parse(script.textContent);
-                            if (data.recipeIngredient) {
-                                ingredients.push(...data.recipeIngredient);
-                            } else if (Array.isArray(data) && data[0]?.recipeIngredient) {
-                                ingredients.push(...data[0].recipeIngredient);
-                            }
-                        } catch (e) {}
-                    });
-                }
-                
-                // Clean up ingredients - extract just the item name
-                return ingredients.map(ing => {
-                    // Remove measurements and common words
-                    let cleaned = ing
-                        .replace(/^\d+[\s\/\d]*\s*(cup|tbsp|tsp|oz|lb|g|kg|ml|l|teaspoon|tablespoon|ounce|pound|gram|kilogram|milliliter|liter)s?\s*/i, '')
-                        .replace(/\(.*?\)/g, '') // Remove parentheses
-                        .replace(/,.*$/, '') // Remove everything after comma
-                        .trim();
-                    
-                    return cleaned;
-                }).filter(ing => ing.length > 0);
-                
+                // Use Ollama to parse the recipe
+                return await parseRecipeWithOllama(url);
             } catch (error) {
                 console.error('Error fetching recipe page:', error);
-                // CORS will likely cause errors - return empty array
                 return [];
+            }
+        }
+        
+        async function parseRecipeWithOllama(url) {
+            try {
+                const prompt = `Fetch the recipe from this URL: ${url}
+                
+Extract ONLY the ingredient names (without measurements or quantities) as a simple comma-separated list.
+Do not include any other text, explanations, or formatting. Just the ingredient names.
+
+Example output: chicken breast, olive oil, garlic, salt, pepper, lemon juice`;
+
+                const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model: OLLAMA_MODEL,
+                        prompt: prompt,
+                        stream: false
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Ollama request failed');
+                }
+                
+                const data = await response.json();
+                const ingredientsText = data.response.trim();
+                
+                // Split by comma and clean up
+                return ingredientsText.split(',').map(ing => ing.trim()).filter(ing => ing.length > 0);
+                
+            } catch (error) {
+                console.error('Error using Ollama:', error);
+                return [];
+            }
+        }
+        
+        async function fetchFullRecipeWithOllama(url) {
+            try {
+                const prompt = `Fetch and parse the recipe from this URL: ${url}
+
+Please extract and format the recipe with:
+1. Recipe title
+2. Ingredients list (with measurements)
+3. Step-by-step cooking instructions
+
+Format it cleanly and readably. If it's a video URL, explain that written conversion is needed.`;
+
+                const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model: OLLAMA_MODEL,
+                        prompt: prompt,
+                        stream: false
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Ollama request failed');
+                }
+                
+                const data = await response.json();
+                return data.response;
+                
+            } catch (error) {
+                console.error('Error fetching full recipe with Ollama:', error);
+                return null;
             }
         }
         
@@ -445,8 +497,12 @@
                 shoppingList = Array.from(allIngredients).sort();
                 console.log('Generated shopping list:', shoppingList);
                 
+                if (shoppingList.length === 0) {
+                    shoppingList = DEMO_SHOPPING;
+                }
             } catch (error) {
                 console.error('Error loading shopping list:', error);
+                shoppingList = DEMO_SHOPPING;
             }
         }
         
@@ -472,27 +528,41 @@
             
             const recipeUrl = convertToRecipeUrl(recipe.url, recipe.type);
             const isVideo = recipe.type === 'video';
+            const cacheKey = recipe.url;
+            
+            // Check if we have cached recipe
+            const hasFullRecipe = recipeCache[cacheKey];
             
             return `
                 <div class="recipe-card">
                     <h2 class="recipe-title">${recipe.meal}</h2>
                     <p class="recipe-subtitle">${recipe.day}'s Dinner</p>
                     
-                    <div class="recipe-link-box">
-                        <strong>Recipe Link:</strong><br>
-                        <a href="${recipeUrl}" target="_blank" rel="noopener noreferrer">
-                            ${isVideo ? 'View on cooking.guru' : 'Open Recipe'}
-                        </a>
-                    </div>
-                    
-                    ${isVideo ? `
-                        <div class="info-box">
-                            📹 This is a video recipe. The link will open cooking.guru which converts it to written format.
+                    ${hasFullRecipe ? `
+                        <div style="background: white; padding: 16px; border-radius: 8px; margin: 16px 0;">
+                            <div style="white-space: pre-wrap; line-height: 1.6;">${hasFullRecipe}</div>
                         </div>
-                    ` : ''}
+                    ` : `
+                        <div class="recipe-link-box">
+                            <strong>Recipe Link:</strong><br>
+                            <a href="${recipeUrl}" target="_blank" rel="noopener noreferrer">
+                                ${isVideo ? 'View on cooking.guru' : 'Open Recipe'}
+                            </a>
+                        </div>
+                        
+                        ${isVideo ? `
+                            <div class="info-box">
+                                📹 This is a video recipe. The link will open cooking.guru which converts it to written format.
+                            </div>
+                        ` : ''}
+                        
+                        <button class="btn btn-primary" onclick="loadFullRecipe('${cacheKey}')" style="margin-bottom: 8px;">
+                            📖 Load Full Recipe with Ollama
+                        </button>
+                    `}
                     
-                    <button class="btn btn-primary" onclick="window.open('${recipeUrl}', '_blank')">
-                        Open Recipe
+                    <button class="btn btn-primary" onclick="window.open('${recipeUrl}', '_blank')" style="background: #16a34a;">
+                        🔗 Open Original Recipe
                     </button>
                 </div>
             `;
@@ -654,6 +724,70 @@
         function showShopping() {
             currentView = 'shopping';
             render();
+        }
+        
+        async function extractSingleRecipe(index) {
+            const recipe = weeklyMenu[index];
+            if (!recipe || !recipe.url) return;
+            
+            const btn = event.target;
+            btn.textContent = 'Extracting...';
+            btn.disabled = true;
+            
+            try {
+                const ingredients = await extractIngredientsFromUrl(recipe.url, recipe.type);
+                if (ingredients && ingredients.length > 0) {
+                    recipe.ingredients = ingredients.join(', ');
+                    await updateSheetIngredients(recipe.rowIndex, recipe.ingredients);
+                    await loadShoppingListFromMenu();
+                    render();
+                    alert(`✓ Extracted ${ingredients.length} ingredients for ${recipe.meal}`);
+                } else {
+                    alert('Could not extract ingredients. Please check console for details.');
+                }
+            } catch (error) {
+                alert('Failed to extract ingredients: ' + error.message);
+            }
+        }
+        
+        async function extractAllMissing() {
+            const needsExtraction = weeklyMenu.filter(item => !item.ingredients && item.url);
+            if (needsExtraction.length === 0) {
+                alert('All recipes already have ingredients!');
+                return;
+            }
+            
+            if (!confirm(`Extract ingredients for ${needsExtraction.length} recipe(s)? This may take a moment.`)) {
+                return;
+            }
+            
+            await extractAllIngredients();
+            await loadShoppingListFromMenu();
+            render();
+            alert('Ingredient extraction complete! Check the console for details.');
+        }
+        
+        async function loadFullRecipe(url) {
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = 'Loading recipe from Ollama...';
+            btn.disabled = true;
+            
+            try {
+                const fullRecipe = await fetchFullRecipeWithOllama(url);
+                if (fullRecipe) {
+                    recipeCache[url] = fullRecipe;
+                    render();
+                } else {
+                    alert('Failed to load recipe. Make sure Ollama is running at ' + OLLAMA_URL);
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                alert('Error loading recipe: ' + error.message);
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
         }
         
         function copyShoppingList() {
