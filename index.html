@@ -297,9 +297,6 @@
             } catch (error) {
                 console.error('Error loading from Google Sheets:', error);
                 alert('Could not load recipes from Google Sheets. Using demo data.\n\nError: ' + error.message);
-                // Fallback to demo data
-                weeklyMenu = DEMO_MENU;
-                shoppingList = DEMO_SHOPPING;
                 render();
             }
         }
@@ -536,4 +533,5 @@
         init();
     </script>
 </body>
+
 </html>
