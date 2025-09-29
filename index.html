@@ -249,21 +249,12 @@
             { day: 'Sunday', meal: 'Roast Chicken', url: 'https://www.example.com/roast', type: 'written' }
         ];
         
-        const DEMO_SHOPPING = [
-            'Spaghetti - 1 lb',
-            'Eggs - 6',
-            'Bacon - 8 oz',
-            'Parmesan cheese - 1 cup',
-            'Chicken breast - 2 lbs',
-            'Mixed vegetables - 1 bag',
-            'Soy sauce - 1/4 cup'
-        ];
+        // Removed demo shopping list - now simplified
         
         // State
         let currentView = 'today';
         let weeklyMenu = [];
-        let shoppingList = [];
-        let recipeCache = {}; // Cache for full recipes
+        let savedRecipes = {}; // Dictionary for saving recipes
         let isConfigured = true; // Set to true to always try loading from sheet
         
         // Get current day
@@ -288,180 +279,96 @@
         }
         
         async function loadFromGoogleSheets() {
-            const range = 'Weekly Menu!A2:E8'; // Now including column E
+            const range = 'Weekly Menu!A2:D8'; // Only need day, meal, url, type
             const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
-            
+
             try {
                 const response = await fetch(url);
                 const data = await response.json();
-                
+
                 if (data.error) {
                     throw new Error(data.error.message);
                 }
-                
+
                 if (data.values) {
                     weeklyMenu = data.values.map((row, index) => ({
                         day: row[0] || '',
                         meal: row[1] || '',
                         url: row[2] || '',
                         type: row[3] || 'written',
-                        ingredients: row[4] || '', // Existing ingredients
                         rowIndex: index + 2 // Sheet row number (A2 = index 2)
                     })).filter(item => item.day && item.meal); // Filter out empty rows
-                    
+
                     console.log('Loaded menu:', weeklyMenu);
-                    
-                    // Check if any recipes need ingredient extraction
-                    const needsExtraction = weeklyMenu.filter(item => !item.ingredients && item.url);
-                    if (needsExtraction.length > 0) {
-                        console.log(`Found ${needsExtraction.length} recipes without ingredients. Extracting...`);
-                        await extractAllIngredients();
-                    }
-                    
-                    // Load shopping list from Ingredients column
-                    await loadShoppingListFromMenu();
+
+                    // Load saved recipes dictionary
+                    await loadSavedRecipes();
                 } else {
                     throw new Error('No data found in sheet');
                 }
-                
+
                 render();
             } catch (error) {
                 console.error('Error loading from Google Sheets:', error);
                 alert('Could not load recipes from Google Sheets. Using demo data.\n\nError: ' + error.message);
                 // Fallback to demo data
                 weeklyMenu = DEMO_MENU;
-                shoppingList = DEMO_SHOPPING;
                 render();
             }
         }
         
-        async function extractAllIngredients() {
-            for (const recipe of weeklyMenu) {
-                if (!recipe.ingredients && recipe.url) {
-                    try {
-                        console.log(`Extracting ingredients for ${recipe.meal}...`);
-                        const ingredients = await extractIngredientsFromUrl(recipe.url, recipe.type);
-                        if (ingredients && ingredients.length > 0) {
-                            recipe.ingredients = ingredients.join(', ');
-                            // Update the sheet with extracted ingredients
-                            await updateSheetIngredients(recipe.rowIndex, recipe.ingredients);
-                            console.log(`✓ Extracted ${ingredients.length} ingredients for ${recipe.meal}`);
+        async function loadSavedRecipes() {
+            // Load from 'Saved Recipes' sheet if exists
+            const range = 'Saved Recipes!A2:C100';
+            const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.values) {
+                    data.values.forEach(row => {
+                        if (row[0] && row[1]) { // name and url
+                            savedRecipes[row[0]] = {
+                                url: row[1],
+                                type: row[2] || 'written'
+                            };
                         }
-                    } catch (error) {
-                        console.error(`Failed to extract ingredients for ${recipe.meal}:`, error);
-                    }
+                    });
+                    console.log('Loaded saved recipes:', Object.keys(savedRecipes).length);
                 }
-            }
-        }
-        
-        async function extractIngredientsFromUrl(url, type) {
-            // For video recipes, use cooking.guru's parsed content
-            if (type === 'video') {
-                const guruUrl = `https://cooking.guru/?url=${encodeURIComponent(url)}`;
-                return await extractIngredientsFromPage(guruUrl);
-            }
-            
-            // For written recipes, use bridge
-            return await extractIngredientsFromPage(url);
-        }
-        
-        async function extractIngredientsFromPage(url) {
-            try {
-                // Use Python bridge to fetch and parse with Ollama
-                const response = await fetch(`${BRIDGE_URL}/extract-ingredients?url=${encodeURIComponent(url)}`);
-                const data = await response.json();
-                
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-                
-                return data.ingredients || [];
             } catch (error) {
-                console.error('Error extracting ingredients:', error);
-                return [];
+                console.log('No saved recipes sheet found or error loading:', error.message);
             }
         }
         
-        async function fetchFullRecipeWithOllama(url) {
-            try {
-                const response = await fetch(`${BRIDGE_URL}/fetch-recipe?url=${encodeURIComponent(url)}`);
-                const data = await response.json();
-                
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-                
-                return data.recipe;
-                
-            } catch (error) {
-                console.error('Error fetching full recipe:', error);
-                return null;
-            }
-        }
         
-        async function updateSheetIngredients(rowIndex, ingredients) {
-            const range = `Weekly Menu!E${rowIndex}`;
-            const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?valueInputOption=RAW&key=${API_KEY}`;
-            
+        async function saveRecipeToLibrary(name, url, type) {
+            // Add recipe to saved recipes dictionary
+            savedRecipes[name] = { url, type };
+
+            // Save to Google Sheets if possible
             try {
-                const response = await fetch(url, {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                const range = 'Saved Recipes!A:C';
+                const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}:append?valueInputOption=RAW&key=${API_KEY}`;
+
+                await fetch(sheetUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        values: [[ingredients]]
+                        values: [[name, url, type]]
                     })
                 });
-                
-                if (!response.ok) {
-                    throw new Error('Failed to update sheet');
-                }
-                
-                console.log(`✓ Updated row ${rowIndex} with ingredients`);
+
+                console.log('Saved recipe to sheet:', name);
             } catch (error) {
-                console.error('Error updating sheet:', error);
-                // Note: This will fail with API key auth - needs OAuth
+                console.log('Could not save to sheet, saved locally:', error.message);
             }
         }
-        
-        async function loadShoppingListFromSheet() {
-            // Use ingredients from weeklyMenu instead of fetching separately
-            await loadShoppingListFromMenu();
-        }
-        
-        async function loadShoppingListFromMenu() {
-            try {
-                // Flatten and combine all ingredients from the menu
-                const allIngredients = new Set();
-                weeklyMenu.forEach(recipe => {
-                    if (recipe.ingredients) {
-                        // Split by comma and trim each ingredient
-                        recipe.ingredients.split(',').forEach(ing => {
-                            const trimmed = ing.trim();
-                            if (trimmed) allIngredients.add(trimmed);
-                        });
-                    }
-                });
-                
-                shoppingList = Array.from(allIngredients).sort();
-                console.log('Generated shopping list:', shoppingList);
-                
-                if (shoppingList.length === 0) {
-                    shoppingList = DEMO_SHOPPING;
-                }
-            } catch (error) {
-                console.error('Error loading shopping list:', error);
-                shoppingList = DEMO_SHOPPING;
-            }
-        }
-        
-        // Convert video URLs to cooking.guru
-        function convertToRecipeUrl(url, type) {
-            if (type === 'video') {
-                return `https://cooking.guru/?url=${encodeURIComponent(url)}`;
-            }
-            return url;
+
+        // Get cooking.guru URL for video recipes
+        function getCookingGuruUrl(url) {
+            return `https://cooking.guru/?url=${encodeURIComponent(url)}`;
         }
         
         // Get today's recipe
@@ -475,44 +382,47 @@
             if (!recipe) {
                 return `<div class="info-box">No recipe scheduled for ${currentDay}. Check your Google Sheet or view This Week tab.</div>`;
             }
-            
-            const recipeUrl = convertToRecipeUrl(recipe.url, recipe.type);
+
             const isVideo = recipe.type === 'video';
-            const cacheKey = recipe.url;
-            
-            // Check if we have cached recipe
-            const hasFullRecipe = recipeCache[cacheKey];
-            
+            const recipeUrl = recipe.url;
+            const cookingGuruUrl = isVideo ? getCookingGuruUrl(recipe.url) : null;
+
             return `
                 <div class="recipe-card">
                     <h2 class="recipe-title">${recipe.meal}</h2>
                     <p class="recipe-subtitle">${recipe.day}'s Dinner</p>
-                    
-                    ${hasFullRecipe ? `
-                        <div style="background: white; padding: 16px; border-radius: 8px; margin: 16px 0;">
-                            <div style="white-space: pre-wrap; line-height: 1.6;">${hasFullRecipe}</div>
+
+                    ${isVideo ? `
+                        <div class="info-box">
+                            📹 This is a video recipe. Copy the URL below into cooking.guru to generate a written version.
+                        </div>
+
+                        <div class="recipe-link-box">
+                            <strong>cooking.guru:</strong><br>
+                            <a href="https://cooking.guru" target="_blank" rel="noopener noreferrer">
+                                Open cooking.guru
+                            </a>
+                        </div>
+
+                        <div class="recipe-link-box">
+                            <strong>Original Video URL:</strong><br>
+                            <input type="text" value="${recipeUrl}" readonly style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; background: #f9f9f9;" onclick="this.select()">
                         </div>
                     ` : `
                         <div class="recipe-link-box">
-                            <strong>Recipe Link:</strong><br>
+                            <strong>Recipe URL:</strong><br>
                             <a href="${recipeUrl}" target="_blank" rel="noopener noreferrer">
-                                ${isVideo ? 'View on cooking.guru' : 'Open Recipe'}
+                                ${recipeUrl}
                             </a>
                         </div>
-                        
-                        ${isVideo ? `
-                            <div class="info-box">
-                                📹 This is a video recipe. The link will open cooking.guru which converts it to written format.
-                            </div>
-                        ` : ''}
-                        
-                        <button class="btn btn-primary" onclick="loadFullRecipe('${cacheKey}')" style="margin-bottom: 8px;">
-                            📖 Load Full Recipe with Ollama
-                        </button>
                     `}
-                    
+
                     <button class="btn btn-primary" onclick="window.open('${recipeUrl}', '_blank')" style="background: #16a34a;">
                         🔗 Open Original Recipe
+                    </button>
+
+                    <button class="btn btn-primary" onclick="saveCurrentRecipe()" style="background: #6366f1; margin-top: 8px;">
+                        📾 Save Recipe to Library
                     </button>
                 </div>
             `;
@@ -522,12 +432,11 @@
             if (weeklyMenu.length === 0) {
                 return '<div class="info-box">No recipes loaded. Check your Google Sheet configuration.</div>';
             }
-            
+
             const items = weeklyMenu.map((item, index) => {
                 const isToday = item.day === currentDay;
-                const recipeUrl = convertToRecipeUrl(item.url, item.type);
-                const hasIngredients = item.ingredients && item.ingredients.length > 0;
-                
+                const isVideo = item.type === 'video';
+
                 return `
                     <div class="week-item ${isToday ? 'today' : ''}">
                         <div class="week-item-header">
@@ -538,82 +447,83 @@
                                 </div>
                                 <div class="meal-name">${item.meal}</div>
                                 <div class="recipe-type">
-                                    ${item.type === 'video' ? '📹 Video Recipe' : '📄 Written Recipe'}
-                                    ${hasIngredients ? ' • ✅ Ingredients loaded' : ' • ⚠️ No ingredients'}
+                                    ${isVideo ? '📹 Video Recipe' : '📄 Written Recipe'}
                                 </div>
-                                ${!hasIngredients ? `
-                                    <button 
-                                        onclick="extractSingleRecipe(${index})" 
-                                        class="btn btn-primary" 
-                                        style="margin-top: 8px; padding: 6px 12px; font-size: 12px; width: auto;"
-                                    >
-                                        Extract Ingredients
-                                    </button>
+
+                                ${isVideo ? `
+                                    <div style="margin-top: 8px; padding: 8px; background: #fef3c7; border-radius: 4px; font-size: 12px;">
+                                        Copy to cooking.guru: <input type="text" value="${item.url}" readonly onclick="this.select()" style="width: 200px; font-size: 10px; padding: 2px;">
+                                    </div>
                                 ` : ''}
                             </div>
-                            <a href="${recipeUrl}" target="_blank" rel="noopener noreferrer" style="color: #ea580c; text-decoration: none; font-size: 24px;">
+                            <a href="${item.url}" target="_blank" rel="noopener noreferrer" style="color: #ea580c; text-decoration: none; font-size: 24px;">
                                 🔗
                             </a>
                         </div>
                     </div>
                 `;
             }).join('');
-            
+
             return `
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
                     <h2 style="font-size: 24px; font-weight: bold; color: #1f2937;">This Week's Menu</h2>
-                    <div style="display: flex; gap: 8px;">
-                        <button class="btn btn-primary" onclick="extractAllMissing()" style="width: auto; padding: 10px 20px; background: #f59e0b;">
-                            🔄 Extract All Ingredients
-                        </button>
-                        <button class="btn btn-success" onclick="showShopping()" style="width: auto; padding: 10px 20px;">
-                            🛒 Shopping List
-                        </button>
-                    </div>
                 </div>
                 <div class="info-box" style="font-size: 14px;">
-                    <strong>Note:</strong> Automatic ingredient extraction may not work for all websites due to CORS restrictions. 
-                    If extraction fails, you'll need to manually add ingredients to your Google Sheet in column E.
+                    <strong>Simplified View:</strong> URLs are shown directly. For video recipes, copy the URL into cooking.guru to generate written instructions.
                 </div>
                 ${items}
             `;
         }
         
         function renderShoppingView() {
-            if (shoppingList.length === 0) {
-                return '<div class="info-box">No ingredients found. Add an "Ingredients" column (E) to your Google Sheet with comma-separated ingredients.</div>';
-            }
-            
-            const items = shoppingList.map((item, index) => `
-                <div class="shopping-item">
-                    <input type="checkbox" id="item-${index}">
-                    <label for="item-${index}" style="margin: 0; cursor: pointer;">${item}</label>
-                </div>
-            `).join('');
-            
             return `
                 <h2 style="font-size: 24px; font-weight: bold; color: #1f2937; margin-bottom: 16px;">Shopping List</h2>
-                <p style="color: #6b7280; margin-bottom: 16px;">Ingredients for this week's meals:</p>
-                
-                <div class="shopping-list">
-                    ${items}
+                <div class="info-box">
+                    🛒 Shopping list generation has been simplified. Create your own list from the recipe URLs or manually add ingredients to your Google Sheet for automatic generation in the future.
                 </div>
-                
-                <button class="btn btn-primary" onclick="copyShoppingList()" style="margin-top: 16px;">
-                    Copy to Clipboard
-                </button>
+
+                <div style="background: #f9fafb; border-radius: 8px; padding: 16px; margin-top: 16px;">
+                    <textarea placeholder="Add your shopping items here..." style="width: 100%; height: 200px; border: 1px solid #d1d5db; border-radius: 4px; padding: 8px; resize: vertical;"></textarea>
+                </div>
             `;
         }
         
         function renderDictionaryView() {
+            const savedRecipeItems = Object.keys(savedRecipes).map(name => {
+                const recipe = savedRecipes[name];
+                const isVideo = recipe.type === 'video';
+                return `
+                    <div class="week-item">
+                        <div class="week-item-header">
+                            <div style="flex: 1;">
+                                <div class="meal-name">${name}</div>
+                                <div class="recipe-type">
+                                    ${isVideo ? '📹 Video Recipe' : '📄 Written Recipe'}
+                                </div>
+                                ${isVideo ? `
+                                    <div style="margin-top: 8px; padding: 8px; background: #fef3c7; border-radius: 4px; font-size: 12px;">
+                                        Copy to cooking.guru: <input type="text" value="${recipe.url}" readonly onclick="this.select()" style="width: 200px; font-size: 10px; padding: 2px;">
+                                    </div>
+                                ` : ''}
+                            </div>
+                            <a href="${recipe.url}" target="_blank" rel="noopener noreferrer" style="color: #ea580c; text-decoration: none; font-size: 24px;">
+                                🔗
+                            </a>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
             return `
-                <h2 style="font-size: 24px; font-weight: bold; color: #1f2937; margin-bottom: 16px;">Saved Recipes</h2>
-                <p style="color: #6b7280; margin-bottom: 16px;">Your recipe collection for future weeks.</p>
-                
-                <div class="info-box">
-                    📚 Recipe dictionary will be populated from your Google Sheet's "Recipe Dictionary" tab. 
-                    You can save frequently used recipes here for easy access when planning future weeks.
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h2 style="font-size: 24px; font-weight: bold; color: #1f2937;">Saved Recipes</h2>
+                    <button class="btn btn-primary" onclick="showAddRecipeForm()" style="width: auto; padding: 10px 20px;">
+                        ➕ Add Recipe
+                    </button>
                 </div>
+                <p style="color: #6b7280; margin-bottom: 16px;">Your recipe collection for future weeks.</p>
+
+                ${Object.keys(savedRecipes).length > 0 ? savedRecipeItems : '<div class="info-box">No saved recipes yet. Use the "Save Recipe to Library" button on today\'s view or add them manually here.</div>'}
             `;
         }
         
@@ -676,77 +586,29 @@
             render();
         }
         
-        async function extractSingleRecipe(index) {
-            const recipe = weeklyMenu[index];
-            if (!recipe || !recipe.url) return;
-            
-            const btn = event.target;
-            btn.textContent = 'Extracting...';
-            btn.disabled = true;
-            
-            try {
-                const ingredients = await extractIngredientsFromUrl(recipe.url, recipe.type);
-                if (ingredients && ingredients.length > 0) {
-                    recipe.ingredients = ingredients.join(', ');
-                    await updateSheetIngredients(recipe.rowIndex, recipe.ingredients);
-                    await loadShoppingListFromMenu();
-                    render();
-                    alert(`✓ Extracted ${ingredients.length} ingredients for ${recipe.meal}`);
-                } else {
-                    alert('Could not extract ingredients. Please check console for details.');
-                }
-            } catch (error) {
-                alert('Failed to extract ingredients: ' + error.message);
+        function saveCurrentRecipe() {
+            const recipe = getTodaysRecipe();
+            if (!recipe) return;
+
+            const name = prompt('Enter a name for this recipe:', recipe.meal);
+            if (name && name.trim()) {
+                saveRecipeToLibrary(name.trim(), recipe.url, recipe.type);
+                alert('✓ Recipe saved to library!');
             }
         }
-        
-        async function extractAllMissing() {
-            const needsExtraction = weeklyMenu.filter(item => !item.ingredients && item.url);
-            if (needsExtraction.length === 0) {
-                alert('All recipes already have ingredients!');
-                return;
-            }
-            
-            if (!confirm(`Extract ingredients for ${needsExtraction.length} recipe(s)? This may take a moment.`)) {
-                return;
-            }
-            
-            await extractAllIngredients();
-            await loadShoppingListFromMenu();
+
+        function showAddRecipeForm() {
+            const name = prompt('Recipe name:');
+            if (!name) return;
+
+            const url = prompt('Recipe URL:');
+            if (!url) return;
+
+            const type = confirm('Is this a video recipe?') ? 'video' : 'written';
+
+            saveRecipeToLibrary(name, url, type);
             render();
-            alert('Ingredient extraction complete! Check the console for details.');
-        }
-        
-        async function loadFullRecipe(url) {
-            const btn = event.target;
-            const originalText = btn.textContent;
-            btn.textContent = 'Loading recipe from Ollama...';
-            btn.disabled = true;
-            
-            try {
-                const fullRecipe = await fetchFullRecipeWithOllama(url);
-                if (fullRecipe) {
-                    recipeCache[url] = fullRecipe;
-                    render();
-                } else {
-                    alert('Failed to load recipe. Make sure Ollama is running at ' + OLLAMA_URL);
-                    btn.textContent = originalText;
-                    btn.disabled = false;
-                }
-            } catch (error) {
-                alert('Error loading recipe: ' + error.message);
-                btn.textContent = originalText;
-                btn.disabled = false;
-            }
-        }
-        
-        function copyShoppingList() {
-            const text = shoppingList.join('\n');
-            navigator.clipboard.writeText(text).then(() => {
-                alert('Shopping list copied to clipboard!');
-            }).catch(err => {
-                alert('Failed to copy: ' + err);
-            });
+            alert('✓ Recipe added to library!');
         }
         
         // Initialize app
