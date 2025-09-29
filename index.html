@@ -367,83 +367,39 @@
         
         async function extractIngredientsFromPage(url) {
             try {
-                // Use Ollama to parse the recipe
-                return await parseRecipeWithOllama(url);
+                // Use Python bridge to fetch and parse with Ollama
+                const response = await fetch(`${BRIDGE_URL}/extract-ingredients?url=${encodeURIComponent(url)}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                return data.ingredients || [];
             } catch (error) {
-                console.error('Error fetching recipe page:', error);
+                console.error('Error extracting ingredients:', error);
                 return [];
             }
         }
         
         async function parseRecipeWithOllama(url) {
-            try {
-                const prompt = `Fetch the recipe from this URL: ${url}
-                
-Extract ONLY the ingredient names (without measurements or quantities) as a simple comma-separated list.
-Do not include any other text, explanations, or formatting. Just the ingredient names.
-
-Example output: chicken breast, olive oil, garlic, salt, pepper, lemon juice`;
-
-                const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        model: OLLAMA_MODEL,
-                        prompt: prompt,
-                        stream: false
-                    })
-                });
-                
-                if (!response.ok) {
-                    throw new Error('Ollama request failed');
-                }
-                
-                const data = await response.json();
-                const ingredientsText = data.response.trim();
-                
-                // Split by comma and clean up
-                return ingredientsText.split(',').map(ing => ing.trim()).filter(ing => ing.length > 0);
-                
-            } catch (error) {
-                console.error('Error using Ollama:', error);
-                return [];
-            }
+            // No longer needed - handled by bridge
+            return await extractIngredientsFromPage(url);
         }
         
         async function fetchFullRecipeWithOllama(url) {
             try {
-                const prompt = `Fetch and parse the recipe from this URL: ${url}
-
-Please extract and format the recipe with:
-1. Recipe title
-2. Ingredients list (with measurements)
-3. Step-by-step cooking instructions
-
-Format it cleanly and readably. If it's a video URL, explain that written conversion is needed.`;
-
-                const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        model: OLLAMA_MODEL,
-                        prompt: prompt,
-                        stream: false
-                    })
-                });
+                const response = await fetch(`${BRIDGE_URL}/fetch-recipe?url=${encodeURIComponent(url)}`);
+                const data = await response.json();
                 
-                if (!response.ok) {
-                    throw new Error('Ollama request failed');
+                if (data.error) {
+                    throw new Error(data.error);
                 }
                 
-                const data = await response.json();
-                return data.response;
+                return data.recipe;
                 
             } catch (error) {
-                console.error('Error fetching full recipe with Ollama:', error);
+                console.error('Error fetching full recipe:', error);
                 return null;
             }
         }
