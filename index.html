@@ -237,7 +237,7 @@
         const SHEET_ID = '1b8VXiTPe4jMVBXLKdhSYLjas36QT0tfu3OBlMrdF_Q0';
         const API_KEY = 'AIzaSyBtIH1g9yZdjJ3lOtl7o7PmA9ukc76aTtE';
         
-        
+      
         // State
         let currentView = 'today';
         let weeklyMenu = [];
@@ -266,7 +266,7 @@
         }
         
         async function loadFromGoogleSheets() {
-            const range = 'Weekly Menu!A2:D8'; // Adjust range as needed (7 days)
+            const range = 'Weekly Menu!A2:E8'; // Now including column E
             const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
             
             try {
@@ -278,17 +278,26 @@
                 }
                 
                 if (data.values) {
-                    weeklyMenu = data.values.map(row => ({
+                    weeklyMenu = data.values.map((row, index) => ({
                         day: row[0] || '',
                         meal: row[1] || '',
                         url: row[2] || '',
-                        type: row[3] || 'written'
+                        type: row[3] || 'written',
+                        ingredients: row[4] || '', // Existing ingredients
+                        rowIndex: index + 2 // Sheet row number (A2 = index 2)
                     })).filter(item => item.day && item.meal); // Filter out empty rows
                     
                     console.log('Loaded menu:', weeklyMenu);
                     
-                    // Also load shopping list from Ingredients column
-                    await loadShoppingListFromSheet();
+                    // Check if any recipes need ingredient extraction
+                    const needsExtraction = weeklyMenu.filter(item => !item.ingredients && item.url);
+                    if (needsExtraction.length > 0) {
+                        console.log(`Found ${needsExtraction.length} recipes without ingredients. Extracting...`);
+                        await extractAllIngredients();
+                    }
+                    
+                    // Load shopping list from Ingredients column
+                    await loadShoppingListFromMenu();
                 } else {
                     throw new Error('No data found in sheet');
                 }
@@ -301,36 +310,143 @@
             }
         }
         
-        async function loadShoppingListFromSheet() {
-            const range = 'Weekly Menu!E2:E8'; // Column E for ingredients
-            const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
+        async function extractAllIngredients() {
+            for (const recipe of weeklyMenu) {
+                if (!recipe.ingredients && recipe.url) {
+                    try {
+                        console.log(`Extracting ingredients for ${recipe.meal}...`);
+                        const ingredients = await extractIngredientsFromUrl(recipe.url, recipe.type);
+                        if (ingredients && ingredients.length > 0) {
+                            recipe.ingredients = ingredients.join(', ');
+                            // Update the sheet with extracted ingredients
+                            await updateSheetIngredients(recipe.rowIndex, recipe.ingredients);
+                            console.log(`✓ Extracted ${ingredients.length} ingredients for ${recipe.meal}`);
+                        }
+                    } catch (error) {
+                        console.error(`Failed to extract ingredients for ${recipe.meal}:`, error);
+                    }
+                }
+            }
+        }
+        
+        async function extractIngredientsFromUrl(url, type) {
+            // For video recipes, use cooking.guru's parsed content
+            if (type === 'video') {
+                const guruUrl = `https://cooking.guru/?url=${encodeURIComponent(url)}`;
+                return await extractIngredientsFromPage(guruUrl);
+            }
+            
+            // For written recipes, fetch directly
+            return await extractIngredientsFromPage(url);
+        }
+        
+        async function extractIngredientsFromPage(url) {
+            try {
+                // Note: Direct fetching may fail due to CORS. This is a limitation.
+                // A proper solution would need a backend proxy or browser extension
+                const response = await fetch(url, { mode: 'cors' });
+                const html = await response.text();
+                
+                // Parse HTML
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                
+                // Try common recipe site patterns
+                const ingredients = [];
+                
+                // Pattern 1: Look for elements with "ingredient" in class/id
+                const ingredientElements = doc.querySelectorAll('[class*="ingredient" i], [id*="ingredient" i], .recipe-ingredient, .ingredient-list li');
+                ingredientElements.forEach(el => {
+                    const text = el.textContent.trim();
+                    if (text && text.length < 100) { // Reasonable ingredient length
+                        ingredients.push(text);
+                    }
+                });
+                
+                // Pattern 2: Look for structured data (JSON-LD)
+                if (ingredients.length === 0) {
+                    const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+                    scripts.forEach(script => {
+                        try {
+                            const data = JSON.parse(script.textContent);
+                            if (data.recipeIngredient) {
+                                ingredients.push(...data.recipeIngredient);
+                            } else if (Array.isArray(data) && data[0]?.recipeIngredient) {
+                                ingredients.push(...data[0].recipeIngredient);
+                            }
+                        } catch (e) {}
+                    });
+                }
+                
+                // Clean up ingredients - extract just the item name
+                return ingredients.map(ing => {
+                    // Remove measurements and common words
+                    let cleaned = ing
+                        .replace(/^\d+[\s\/\d]*\s*(cup|tbsp|tsp|oz|lb|g|kg|ml|l|teaspoon|tablespoon|ounce|pound|gram|kilogram|milliliter|liter)s?\s*/i, '')
+                        .replace(/\(.*?\)/g, '') // Remove parentheses
+                        .replace(/,.*$/, '') // Remove everything after comma
+                        .trim();
+                    
+                    return cleaned;
+                }).filter(ing => ing.length > 0);
+                
+            } catch (error) {
+                console.error('Error fetching recipe page:', error);
+                // CORS will likely cause errors - return empty array
+                return [];
+            }
+        }
+        
+        async function updateSheetIngredients(rowIndex, ingredients) {
+            const range = `Weekly Menu!E${rowIndex}`;
+            const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?valueInputOption=RAW&key=${API_KEY}`;
             
             try {
-                const response = await fetch(url);
-                const data = await response.json();
+                const response = await fetch(url, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        values: [[ingredients]]
+                    })
+                });
                 
-                if (data.values && data.values.length > 0) {
-                    // Flatten and combine all ingredients
-                    const allIngredients = new Set();
-                    data.values.forEach(row => {
-                        if (row[0]) {
-                            // Split by comma and trim each ingredient
-                            row[0].split(',').forEach(ing => {
-                                const trimmed = ing.trim();
-                                if (trimmed) allIngredients.add(trimmed);
-                            });
-                        }
-                    });
-                    shoppingList = Array.from(allIngredients).sort();
-                    console.log('Loaded shopping list:', shoppingList);
-                } else {
-                    // No ingredients column, use demo data
-                    shoppingList = DEMO_SHOPPING;
+                if (!response.ok) {
+                    throw new Error('Failed to update sheet');
                 }
+                
+                console.log(`✓ Updated row ${rowIndex} with ingredients`);
+            } catch (error) {
+                console.error('Error updating sheet:', error);
+                // Note: This will fail with API key auth - needs OAuth
+            }
+        }
+        
+        async function loadShoppingListFromSheet() {
+            // Use ingredients from weeklyMenu instead of fetching separately
+            await loadShoppingListFromMenu();
+        }
+        
+        async function loadShoppingListFromMenu() {
+            try {
+                // Flatten and combine all ingredients from the menu
+                const allIngredients = new Set();
+                weeklyMenu.forEach(recipe => {
+                    if (recipe.ingredients) {
+                        // Split by comma and trim each ingredient
+                        recipe.ingredients.split(',').forEach(ing => {
+                            const trimmed = ing.trim();
+                            if (trimmed) allIngredients.add(trimmed);
+                        });
+                    }
+                });
+                
+                shoppingList = Array.from(allIngredients).sort();
+                console.log('Generated shopping list:', shoppingList);
+                
             } catch (error) {
                 console.error('Error loading shopping list:', error);
-                // Keep demo shopping list
-                shoppingList = DEMO_SHOPPING;
             }
         }
         
@@ -387,14 +503,15 @@
                 return '<div class="info-box">No recipes loaded. Check your Google Sheet configuration.</div>';
             }
             
-            const items = weeklyMenu.map(item => {
+            const items = weeklyMenu.map((item, index) => {
                 const isToday = item.day === currentDay;
                 const recipeUrl = convertToRecipeUrl(item.url, item.type);
+                const hasIngredients = item.ingredients && item.ingredients.length > 0;
                 
                 return `
                     <div class="week-item ${isToday ? 'today' : ''}">
                         <div class="week-item-header">
-                            <div>
+                            <div style="flex: 1;">
                                 <div class="day-name">
                                     ${item.day}
                                     ${isToday ? '<span class="today-badge">Today</span>' : ''}
@@ -402,7 +519,17 @@
                                 <div class="meal-name">${item.meal}</div>
                                 <div class="recipe-type">
                                     ${item.type === 'video' ? '📹 Video Recipe' : '📄 Written Recipe'}
+                                    ${hasIngredients ? ' • ✅ Ingredients loaded' : ' • ⚠️ No ingredients'}
                                 </div>
+                                ${!hasIngredients ? `
+                                    <button 
+                                        onclick="extractSingleRecipe(${index})" 
+                                        class="btn btn-primary" 
+                                        style="margin-top: 8px; padding: 6px 12px; font-size: 12px; width: auto;"
+                                    >
+                                        Extract Ingredients
+                                    </button>
+                                ` : ''}
                             </div>
                             <a href="${recipeUrl}" target="_blank" rel="noopener noreferrer" style="color: #ea580c; text-decoration: none; font-size: 24px;">
                                 🔗
@@ -413,11 +540,20 @@
             }).join('');
             
             return `
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
                     <h2 style="font-size: 24px; font-weight: bold; color: #1f2937;">This Week's Menu</h2>
-                    <button class="btn btn-success" onclick="showShopping()" style="width: auto; padding: 10px 20px;">
-                        🛒 Shopping List
-                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary" onclick="extractAllMissing()" style="width: auto; padding: 10px 20px; background: #f59e0b;">
+                            🔄 Extract All Ingredients
+                        </button>
+                        <button class="btn btn-success" onclick="showShopping()" style="width: auto; padding: 10px 20px;">
+                            🛒 Shopping List
+                        </button>
+                    </div>
+                </div>
+                <div class="info-box" style="font-size: 14px;">
+                    <strong>Note:</strong> Automatic ingredient extraction may not work for all websites due to CORS restrictions. 
+                    If extraction fails, you'll need to manually add ingredients to your Google Sheet in column E.
                 </div>
                 ${items}
             `;
@@ -533,5 +669,4 @@
         init();
     </script>
 </body>
-
 </html>
