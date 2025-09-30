@@ -531,6 +531,9 @@ Click OK then paste the access token...`;
 
                     // Load saved recipes dictionary
                     await loadSavedRecipes();
+
+                    // Auto-scrape ingredients for recipes that don't have them
+                    await autoScrapeAllIngredients();
                 } else {
                     throw new Error('No data found in sheet');
                 }
@@ -587,6 +590,136 @@ Click OK then paste the access token...`;
             }
         }
         
+
+        // Auto-scrape ingredients for all recipes that don't have them
+        async function autoScrapeAllIngredients() {
+            if (!isSignedIn) {
+                console.log('Not signed in - skipping auto-scrape');
+                return;
+            }
+
+            const recipesToScrape = weeklyMenu.filter(recipe =>
+                recipe.type === 'written' && !recipe.ingredients && recipe.url
+            );
+
+            if (recipesToScrape.length === 0) {
+                console.log('No recipes need ingredient scraping');
+                return;
+            }
+
+            console.log(`Auto-scraping ingredients for ${recipesToScrape.length} recipes...`);
+
+            // Show notification
+            showScrapingNotification(recipesToScrape.length);
+
+            let scrapedCount = 0;
+
+            // Scrape recipes sequentially to avoid overwhelming the server
+            for (const recipe of recipesToScrape) {
+                try {
+                    console.log(`Scraping: ${recipe.meal}`);
+                    updateScrapingNotification(scrapedCount + 1, recipesToScrape.length, recipe.meal);
+
+                    const ingredients = await scrapeRecipeIngredients(recipe.url);
+
+                    if (ingredients) {
+                        // Update in sheet
+                        const success = await updateIngredientsInSheet(recipe.rowIndex, ingredients);
+
+                        if (success) {
+                            recipe.ingredients = ingredients;
+                            console.log(`✓ Updated ingredients for ${recipe.meal}`);
+                            scrapedCount++;
+                        }
+                    }
+
+                    // Small delay to be polite to the scraper service
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                } catch (error) {
+                    console.error(`Error scraping ${recipe.meal}:`, error);
+                }
+            }
+
+            console.log('Auto-scraping complete');
+            hideScrapingNotification();
+
+            if (scrapedCount > 0) {
+                showTemporaryMessage(`✓ Successfully scraped ingredients for ${scrapedCount} recipe${scrapedCount > 1 ? 's' : ''}!`);
+            }
+
+            render(); // Update UI with new ingredients
+        }
+
+        // Show scraping notification
+        function showScrapingNotification(total) {
+            const notification = document.createElement('div');
+            notification.id = 'scraping-notification';
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: #fef3c7;
+                border: 2px solid #f59e0b;
+                border-radius: 12px;
+                padding: 16px 20px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                z-index: 1000;
+                min-width: 300px;
+            `;
+            notification.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <div style="font-size: 24px;">🥕</div>
+                    <div>
+                        <div style="font-weight: 600; color: #92400e;">Scraping Ingredients...</div>
+                        <div id="scraping-status" style="color: #78350f; font-size: 14px; margin-top: 4px;">
+                            Starting...
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(notification);
+        }
+
+        function updateScrapingNotification(current, total, recipeName) {
+            const status = document.getElementById('scraping-status');
+            if (status) {
+                status.textContent = `${current} of ${total}: ${recipeName}`;
+            }
+        }
+
+        function hideScrapingNotification() {
+            const notification = document.getElementById('scraping-notification');
+            if (notification) {
+                notification.style.transition = 'opacity 0.3s';
+                notification.style.opacity = '0';
+                setTimeout(() => notification.remove(), 300);
+            }
+        }
+
+        function showTemporaryMessage(message) {
+            const msg = document.createElement('div');
+            msg.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: #d1fae5;
+                border: 2px solid #10b981;
+                border-radius: 12px;
+                padding: 16px 20px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                z-index: 1000;
+                font-weight: 500;
+                color: #065f46;
+            `;
+            msg.textContent = message;
+            document.body.appendChild(msg);
+
+            setTimeout(() => {
+                msg.style.transition = 'opacity 0.3s';
+                msg.style.opacity = '0';
+                setTimeout(() => msg.remove(), 300);
+            }, 3000);
+        }
 
         // Scrape recipe ingredients
         async function scrapeRecipeIngredients(url) {
