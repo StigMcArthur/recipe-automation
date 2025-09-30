@@ -241,6 +241,7 @@
         const API_KEY = 'AIzaSyBtIH1g9yZdjJ3lOtl7o7PmA9ukc76aTtE'; // Still used for read operations
         const OAUTH_CLIENT_ID = '582779635693-072h14eqgs6gch0ncvmocj9v7gn0k52f.apps.googleusercontent.com'; // Replace with your OAuth Client ID
         const BRIDGE_URL = 'http://localhost:5000'; // Python bridge server
+        const RECIPE_SCRAPER_URL = 'http://localhost:5001/scrape'; // Recipe scraper endpoint
 
         // OAuth variables
         let isSignedIn = false;
@@ -505,7 +506,7 @@ Click OK then paste the access token...`;
         }
         
         async function loadFromGoogleSheets() {
-            const range = 'Weekly Menu!A2:D8'; // Only need day, meal, url, type
+            const range = 'Weekly Menu!A2:E8'; // Include ingredients column (E)
             const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
 
             try {
@@ -522,6 +523,7 @@ Click OK then paste the access token...`;
                         meal: row[1] || '',
                         url: row[2] || '',
                         type: row[3] || 'written',
+                        ingredients: row[4] || '', // Ingredients from column E
                         rowIndex: index + 2 // Sheet row number (A2 = index 2)
                     })).filter(item => item.day && item.meal); // Filter out empty rows
 
@@ -556,7 +558,7 @@ Click OK then paste the access token...`;
             }
 
             // Then try to load from Google Sheets (if available)
-            const range = 'Saved Recipes!A2:C100';
+            const range = 'Saved Recipes!A2:D100'; // Include ingredients column
             const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${range}?key=${API_KEY}`;
 
             try {
@@ -569,7 +571,8 @@ Click OK then paste the access token...`;
                         if (row[0] && row[1]) { // name and url
                             savedRecipes[row[0]] = {
                                 url: row[1],
-                                type: row[2] || 'written'
+                                type: row[2] || 'written',
+                                ingredients: row[3] || ''
                             };
                         }
                     });
@@ -584,10 +587,82 @@ Click OK then paste the access token...`;
             }
         }
         
-        
-        async function saveRecipeToLibrary(name, url, type) {
+
+        // Scrape recipe ingredients
+        async function scrapeRecipeIngredients(url) {
+            try {
+                console.log('Scraping ingredients from:', url);
+                const response = await fetch(RECIPE_SCRAPER_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url: url })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Scraper returned ${response.status}`);
+                }
+
+                const data = await response.json();
+                if (data.ingredients && data.ingredients.length > 0) {
+                    return data.ingredients.join(', ');
+                } else {
+                    console.log('No ingredients found');
+                    return '';
+                }
+            } catch (error) {
+                console.error('Error scraping recipe:', error);
+                return '';
+            }
+        }
+
+        // Update ingredients in Google Sheet
+        async function updateIngredientsInSheet(rowIndex, ingredients) {
+            if (!isSignedIn || !accessToken) {
+                console.log('Not signed in - cannot update sheet');
+                return false;
+            }
+
+            try {
+                gapi.client.setToken({
+                    access_token: accessToken
+                });
+
+                const range = `Weekly Menu!E${rowIndex}`; // Column E (ingredients)
+                const request = {
+                    spreadsheetId: SHEET_ID,
+                    range: range,
+                    valueInputOption: 'RAW',
+                    resource: {
+                        values: [[ingredients]]
+                    }
+                };
+
+                await gapi.client.sheets.spreadsheets.values.update(request);
+                console.log('✓ Ingredients updated in sheet at row', rowIndex);
+                return true;
+            } catch (error) {
+                console.error('Error updating sheet:', error);
+                if (error.status === 401) {
+                    signOutOfGoogle();
+                }
+                return false;
+            }
+        }
+
+        async function saveRecipeToLibrary(name, url, type, ingredients = '') {
+            // Scrape ingredients if not provided and it's a written recipe
+            if (!ingredients && type === 'written') {
+                const scraped = await scrapeRecipeIngredients(url);
+                if (scraped) {
+                    ingredients = scraped;
+                    console.log('✓ Ingredients scraped:', ingredients);
+                }
+            }
+
             // Add recipe to saved recipes dictionary
-            savedRecipes[name] = { url, type };
+            savedRecipes[name] = { url, type, ingredients };
 
             // Always save to localStorage first (this will work reliably)
             try {
@@ -607,10 +682,10 @@ Click OK then paste the access token...`;
 
                     const request = {
                         spreadsheetId: SHEET_ID,
-                        range: 'Saved Recipes!A:C',
+                        range: 'Saved Recipes!A:D',
                         valueInputOption: 'RAW',
                         resource: {
-                            values: [[name, url, type]]
+                            values: [[name, url, type, ingredients]]
                         }
                     };
 
@@ -629,6 +704,8 @@ Click OK then paste the access token...`;
             } else {
                 console.log('⚠️ Not signed in to Google - recipe saved locally only');
             }
+
+            return ingredients;
         }
 
         // Get cooking.guru URL for video recipes
@@ -689,6 +766,19 @@ Click OK then paste the access token...`;
                     <button class="btn btn-primary" onclick="saveCurrentRecipe()" style="background: #6366f1; margin-top: 8px;">
                         📾 Save Recipe to Library
                     </button>
+
+                    ${!isVideo && !recipe.ingredients ? `
+                        <button class="btn btn-primary" onclick="scrapeAndAddIngredients()" style="background: #8b5cf6; margin-top: 8px;">
+                            🥕 Scrape & Add Ingredients
+                        </button>
+                    ` : ''}
+
+                    ${recipe.ingredients ? `
+                        <div style="margin-top: 16px; padding: 12px; background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px;">
+                            <strong>Ingredients:</strong><br>
+                            <div style="margin-top: 8px; color: #15803d;">${recipe.ingredients}</div>
+                        </div>
+                    ` : ''}
                 </div>
             `;
         }
@@ -862,18 +952,72 @@ Click OK then paste the access token...`;
             render();
         }
         
-        function saveCurrentRecipe() {
+        async function saveCurrentRecipe() {
             const recipe = getTodaysRecipe();
             if (!recipe) return;
 
             const name = prompt('Enter a name for this recipe:', recipe.meal);
             if (name && name.trim()) {
-                saveRecipeToLibrary(name.trim(), recipe.url, recipe.type);
-                alert('✓ Recipe saved to library!');
+                const ingredients = await saveRecipeToLibrary(name.trim(), recipe.url, recipe.type, recipe.ingredients);
+                if (ingredients) {
+                    alert('✓ Recipe saved to library with ingredients!');
+                } else {
+                    alert('✓ Recipe saved to library!');
+                }
             }
         }
 
-        function showAddRecipeForm() {
+        async function scrapeAndAddIngredients() {
+            const recipe = getTodaysRecipe();
+            if (!recipe || recipe.type === 'video') {
+                alert('Can only scrape ingredients from written recipes');
+                return;
+            }
+
+            if (!isSignedIn) {
+                alert('Please sign in to Google to update the sheet with ingredients');
+                return;
+            }
+
+            const confirmScrape = confirm(`Scrape ingredients for "${recipe.meal}"?\n\nThis will fetch ingredients from the recipe URL and add them to your Google Sheet.`);
+            if (!confirmScrape) return;
+
+            // Show loading state
+            const btn = event.target;
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Scraping...';
+
+            try {
+                // Scrape ingredients
+                const ingredients = await scrapeRecipeIngredients(recipe.url);
+
+                if (!ingredients) {
+                    alert('Could not scrape ingredients from this recipe. The site may not be supported.');
+                    return;
+                }
+
+                // Update in sheet
+                const success = await updateIngredientsInSheet(recipe.rowIndex, ingredients);
+
+                if (success) {
+                    // Update local data
+                    recipe.ingredients = ingredients;
+                    render();
+                    alert('✓ Ingredients added successfully!');
+                } else {
+                    alert('⚠️ Ingredients scraped but could not update sheet. Please check your Google sign-in.');
+                }
+            } catch (error) {
+                console.error('Error in scrapeAndAddIngredients:', error);
+                alert('Error scraping ingredients: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
+        }
+
+        async function showAddRecipeForm() {
             const name = prompt('Recipe name:');
             if (!name) return;
 
@@ -882,7 +1026,7 @@ Click OK then paste the access token...`;
 
             const type = confirm('Is this a video recipe?') ? 'video' : 'written';
 
-            saveRecipeToLibrary(name, url, type);
+            await saveRecipeToLibrary(name, url, type);
             render();
             alert('✓ Recipe added to library!');
         }
