@@ -531,9 +531,6 @@ Click OK then paste the access token...`;
 
                     // Load saved recipes dictionary
                     await loadSavedRecipes();
-
-                    // Auto-scrape ingredients for recipes that don't have them
-                    await autoScrapeAllIngredients();
                 } else {
                     throw new Error('No data found in sheet');
                 }
@@ -1030,7 +1027,12 @@ Click OK then paste the access token...`;
                             <div class="current-day">${currentDay}</div>
                             <div style="font-size: 12px; margin-top: 4px;">${authStatus}</div>
                         </div>
-                        <div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            ${isSignedIn ? `
+                                <button class="btn btn-primary" onclick="startScrapingAllRecipes()" style="padding: 8px 16px; font-size: 14px; background: #8b5cf6;">
+                                    🥕 Scrape All Ingredients
+                                </button>
+                            ` : ''}
                             ${!isSignedIn ?
                                 `<button class="btn btn-primary" onclick="signInToGoogle()" style="padding: 8px 16px; font-size: 14px;">Sign in to Google</button>` :
                                 `<button class="btn btn-primary" onclick="signOutOfGoogle()" style="padding: 8px 16px; font-size: 14px; background: #dc2626;">Sign Out</button>`
@@ -1163,7 +1165,34 @@ Click OK then paste the access token...`;
             render();
             alert('✓ Recipe added to library!');
         }
-        
+
+        // Manually start scraping all recipes
+        async function startScrapingAllRecipes() {
+            if (!isSignedIn) {
+                alert('Please sign in to Google first');
+                return;
+            }
+
+            const recipesToScrape = weeklyMenu.filter(recipe =>
+                recipe.type === 'written' && !recipe.ingredients && recipe.url
+            );
+
+            if (recipesToScrape.length === 0) {
+                alert('All recipes already have ingredients!');
+                return;
+            }
+
+            const confirm = window.confirm(
+                `This will scrape ingredients for ${recipesToScrape.length} recipe${recipesToScrape.length > 1 ? 's' : ''} and add them to your Google Sheet.\n\n` +
+                `Recipes:\n${recipesToScrape.map(r => '• ' + r.meal).join('\n')}\n\n` +
+                `Continue?`
+            );
+
+            if (confirm) {
+                await autoScrapeAllIngredients();
+            }
+        }
+
         // Initialize app
         init();
     </script>
